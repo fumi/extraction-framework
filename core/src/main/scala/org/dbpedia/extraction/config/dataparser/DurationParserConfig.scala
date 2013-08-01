@@ -225,6 +225,14 @@ object DurationParserConfig
             "hari" -> "day",
             "bulan" -> "month",
             "tahun" -> "year"
-		)
+        ),
+        "ja" -> Map(
+            "秒" -> "second",
+            "分" -> "minute",
+            "時" -> "hour",
+            "日" -> "day",
+            "月" -> "month",
+            "年" -> "year"
+        )
     )
 }
