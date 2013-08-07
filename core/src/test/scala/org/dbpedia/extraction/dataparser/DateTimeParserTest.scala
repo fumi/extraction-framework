@@ -668,6 +668,10 @@ class DateTimeParserTest extends FlatSpec with Matchers
     {
         parse("ja", "xsd:gYear", "紀元前20年") should equal (Some("-0020"))
     }
+    "DataParser" should "return date (西暦2012年)" in
+    {
+        parse("ja", "xsd:gYear", "西暦2012年") should equal (Some("2012"))
+    }
 
 
     private val wikiParser = WikiParser.getInstance()
