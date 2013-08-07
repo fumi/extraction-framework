@@ -151,22 +151,22 @@ class DateTimeParser ( context : {
                 {
                     try
                     {
-                    	//month can be either given by its name or by its number 
-                    	val monthNum = months.get(month.toLowerCase) match {
-	                    	case Some(s) => s
-	                    	case None => month.toInt
-                    	}
-                    	//year can contain era
-                    	val yearNum = year match {
-                    	  case YearRegex(year, era) => {
-                    	    val eraIdentifier = getEraSign(era)
-                    	    (eraIdentifier+year).toInt
-                    	  } 
-                    	  case YearRegex(year) => year.toInt
-                        case YearRegex2(era, year) => {
-                          val eraIdentifier = getEraSign(era)
-                          (eraIdentifier+year).toInt
+                        //month can be either given by its name or by its number
+                        val monthNum = months.get(month.toLowerCase) match {
+	                        case Some(s) => s
+	                        case None => month.toInt
                         }
+                        //year can contain era
+                        val yearNum = year match {
+                            case YearRegex(year, era) => {
+                                val eraIdentifier = getEraSign(era)
+                                (eraIdentifier+year).toInt
+                            }
+                            case YearRegex(year) => year.toInt
+                            case YearRegex2(era, year) => {
+                                val eraIdentifier = getEraSign(era)
+                                (eraIdentifier+year).toInt
+                            }
                     	}
                         return Some(new Date(Some(yearNum), Some(monthNum), Some(day.toInt), datatype))
                     }
