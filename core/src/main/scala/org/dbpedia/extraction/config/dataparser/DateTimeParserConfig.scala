@@ -221,9 +221,9 @@ object DateTimeParserConfig
         "ja" -> Map(
             "生年月日と年齢"        -> Map ("year" -> "1", "month"-> "2", "day" -> "3"),
             "生年月日と年齢2"       -> Map ("year" -> "4", "month"-> "5", "day" -> "6"),
-            "生年月日と馬齢"        -> Map ("year" -> "2", "month"-> "3", "day" -> "4"),
+            "生年月日と馬齢"        -> Map ("year" -> "1", "month"-> "2", "day" -> "3"),
             "死亡年月日と没年齢"    -> Map ("year" -> "4", "month"-> "5", "day" -> "6"),
-            "死亡年月日と没馬齢"    -> Map ("year" -> "5", "month"-> "6", "day" -> "7"),
+            "死亡年月日と没馬齢"    -> Map ("year" -> "4", "month"-> "5", "day" -> "6"),
             "没年齢"                -> Map ("year" -> "4", "month"-> "5", "day" -> "6"),
             "没年齢2"               -> Map ("year" -> "4", "month"-> "5", "day" -> "6"),
             "年数"                  -> Map ("year" -> "1", "month"-> "2", "day" -> "3"),
