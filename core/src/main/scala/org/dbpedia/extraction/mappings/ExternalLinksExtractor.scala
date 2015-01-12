@@ -4,8 +4,9 @@ import org.dbpedia.extraction.destinations.DBpediaDatasets
 import org.dbpedia.extraction.destinations.Quad
 import org.dbpedia.extraction.wikiparser._
 import org.dbpedia.extraction.ontology.Ontology
-import org.dbpedia.extraction.util.{Language, UriUtils}
+import org.dbpedia.extraction.util.{Language, UriUtils, ExtractorUtils}
 import scala.collection.mutable.ArrayBuffer
+import scala.language.reflectiveCalls
 
 /**
  * Extracts links to external web pages.
@@ -16,7 +17,7 @@ class ExternalLinksExtractor (
     def language : Language
   }
 )
-extends Extractor
+extends PageNodeExtractor
 {
   val wikiPageExternalLinkProperty = context.ontology.properties("wikiPageExternalLink")
 
@@ -24,7 +25,8 @@ extends Extractor
 
   override def extract(node : PageNode, subjectUri : String, pageContext : PageContext) : Seq[Quad] =
   {
-    if(node.title.namespace != Namespace.Main) return Seq.empty
+    if(node.title.namespace != Namespace.Main && !ExtractorUtils.titleContainsCommonsMetadata(node.title)) 
+        return Seq.empty
 
     var quads = new ArrayBuffer[Quad]()
     for(link <- collectExternalLinks(node);

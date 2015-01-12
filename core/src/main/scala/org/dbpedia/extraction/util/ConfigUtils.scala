@@ -1,26 +1,65 @@
 package org.dbpedia.extraction.util
 
-import java.io.File
+import java.util.Properties
+import java.io.{File,FileInputStream,InputStreamReader}
 import scala.collection.immutable.SortedSet
+import org.dbpedia.extraction.util.RichString.wrapString
 import scala.io.Codec
 import org.dbpedia.extraction.wikiparser.Namespace
 import scala.collection.mutable.{HashSet,HashMap}
 import org.dbpedia.extraction.util.Language.wikiCodeOrdering
 
 
+/**
+ * TODO: use scala.collection.Map[String, String] instead of java.util.Properties?
+ */
 object ConfigUtils {
+  
+  def loadConfig(file: String, charset: String): Properties = {
+    val config = new Properties()
+    
+    val in = new FileInputStream(file)
+    try config.load(new InputStreamReader(in, charset))
+    finally in.close()
+    
+    config
+  }
+  
+  def getValues[T](config: Properties, key: String, sep: Char, required: Boolean)(map: String => T): Seq[T] = {
+    getStrings(config, key, sep, required).map(map(_))
+  }
+
+  def getStrings(config: Properties, key: String, sep: Char, required: Boolean): Seq[String] = {
+    val string = getString(config, key, required)
+    if (string == null) Seq.empty
+    else string.trimSplit(sep)
+  }
+
+  def getValue[T](config: Properties, key: String, required: Boolean)(map: String => T): T = {
+    val string = getString(config, key, required)
+    if (string == null) null.asInstanceOf[T]
+    else map(string)
+  }
+  
+  def getString(config: Properties, key: String, required: Boolean): String = {
+    val string = config.getProperty(key)
+    if (string != null) string
+    else if (! required) null
+    else throw new IllegalArgumentException("property '"+key+"' not defined.")
+  }
   
   /**
    * @param baseDir directory of wikipedia.csv, needed to resolve article count ranges
    * @param args array of space- or comma-separated language codes or article count ranges
    * @return languages, sorted by language code
    */
-  // TODO: copy & paste in org.dbpedia.extraction.dump.download.DownloadConfig, org.dbpedia.extraction.dump.extract.Config
-  def parseLanguages(baseDir: File, args: Array[String]): Array[Language] = {
+  // TODO: reuse this in org.dbpedia.extraction.dump.download.DownloadConfig
+  def parseLanguages(baseDir: File, args: Seq[String]): Array[Language] = {
     
     var keys = for(arg <- args; key <- arg.split("[,\\s]"); if (key.nonEmpty)) yield key
         
     var languages = SortedSet[Language]()
+    var excludedLanguages = SortedSet[Language]()
     
     val ranges = new HashSet[(Int,Int)]
   
@@ -28,6 +67,7 @@ object ConfigUtils {
       case "@mappings" => languages ++= Namespace.mappings.keySet
       case RangeRegex(from, to) => ranges += toRange(from, to)
       case LanguageRegex(language) => languages += Language(language)
+      case ExcludedLanguageRegex(language) => excludedLanguages += Language(language)
       case other => throw new IllegalArgumentException("Invalid language / range '"+other+"'")
     }
     
@@ -49,6 +89,8 @@ object ConfigUtils {
         languages += wiki.language
       }
     }
+
+    languages --= excludedLanguages
     
     languages.toArray
   }
@@ -59,6 +101,11 @@ object ConfigUtils {
    * lower-case letters and dash, but there are also dumps for "wikimania2005wiki" etc.
    */
   val LanguageRegex = """([a-z][a-z0-9-]+)""".r
+
+  /**
+   * Regex used for excluding languages from the import.
+   */
+  val ExcludedLanguageRegex = """!([a-z][a-z0-9-]+)""".r
     
   /**
    * Regex for numeric range, both limits optional
@@ -66,8 +113,8 @@ object ConfigUtils {
   val RangeRegex = """(\d*)-(\d*)""".r
   
   def toRange(from: String, to: String): (Int, Int) = {
-    val lo: Int = if (from isEmpty) 0 else from.toInt
-    val hi: Int = if (to isEmpty) Int.MaxValue else to.toInt
+    val lo: Int = if (from.isEmpty) 0 else from.toInt
+    val hi: Int = if (to.isEmpty) Int.MaxValue else to.toInt
     if (lo > hi) throw new NumberFormatException
     (lo, hi)
   }

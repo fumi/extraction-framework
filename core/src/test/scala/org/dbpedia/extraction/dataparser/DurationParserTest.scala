@@ -3,9 +3,14 @@ package org.dbpedia.extraction.dataparser
 import org.scalatest.FlatSpec
 import org.dbpedia.extraction.ontology.OntologyDatatypes
 import org.dbpedia.extraction.util.Language
-import org.scalatest.matchers.{MatchResult, BeMatcher, ShouldMatchers}
+import org.scalatest.Matchers
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
+import org.scalatest.matchers.BeMatcher
+import org.scalatest.matchers.MatchResult
 
-class DurationParserTest extends FlatSpec with ShouldMatchers
+@RunWith(classOf[JUnitRunner])
+class DurationParserTest extends FlatSpec with Matchers
 {
     "DurationParser" should "return 5 seconds for '5 secs'" in
      {
@@ -80,6 +85,19 @@ class DurationParserTest extends FlatSpec with ShouldMatchers
     "DurationParser" should "return 9954414708530 seconds for '115,213,133.2 days, 50 secs'" in
      {
          parse("en", "Time", "115,213,133.2 days, 50 secs").get should equal (9954414708530.0)
+     }
+    // Implicit unit format 
+    "DurationParser" should "return 273 seconds for '4 min. 33'" in
+     {
+         parse("fr", "Time", "4 min. 33").get should equal (273.0)
+     }
+    "DurationParser" should "return 5400 seconds for '1h30'" in
+     {
+         parse("fr", "Time", "1h30").get should equal (5400.0)
+     }
+    "DurationParser" should "return 4010 seconds for '66'50'" in
+     {
+         parse("fr", "Time", "66'50").get should equal (4010.0)
      }
     // Colon separated
     "DurationParser" should "return 30 seconds for ':30'" in

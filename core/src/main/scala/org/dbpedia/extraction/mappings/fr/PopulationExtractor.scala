@@ -7,6 +7,7 @@ import org.dbpedia.extraction.config.mappings.HomepageExtractorConfig
 import org.dbpedia.extraction.ontology.Ontology
 import org.dbpedia.extraction.util.{Language, UriUtils}
 import org.dbpedia.extraction.mappings._
+import scala.language.reflectiveCalls
 
 /**
  * Extracts links to the official homepage of an instance.
@@ -18,7 +19,7 @@ class PopulationExtractor(
     	def redirects : Redirects
     }
 )
-extends Extractor {
+extends PageNodeExtractor {
     private val populationProperty = context.ontology.properties("populationTotal")
     private val populationRegex = """pop=(\d+)""".r
     override val datasets = Set(DBpediaDatasets.FrenchPopulation)

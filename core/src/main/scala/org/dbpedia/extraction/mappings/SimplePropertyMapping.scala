@@ -9,11 +9,15 @@ import java.lang.IllegalArgumentException
 import org.dbpedia.extraction.wikiparser.TemplateNode
 import org.dbpedia.extraction.ontology.{OntologyDatatypeProperty,OntologyClass,OntologyProperty,DBpediaNamespace}
 import scala.collection.mutable.ArrayBuffer
+import scala.language.reflectiveCalls
 
 class SimplePropertyMapping (
   val templateProperty : String, // IntermediateNodeMapping and CreateMappingStats requires this to be public
   ontologyProperty : OntologyProperty,
   select : String,
+  prefix : String,
+  suffix : String,
+  transform : String,
   unit : Datatype,
   private var language : Language,
   factor : Double,
@@ -26,12 +30,37 @@ class SimplePropertyMapping (
 extends PropertyMapping
 {
     val selector: List[_] => List[_] =
-      select match {
-        case "first" => _.take(1)
-        case "last" => _.reverse.take(1)
-        case null => identity
-        case _ => throw new IllegalArgumentException("Only 'first' or 'last' are allowed in property 'select'")
-      }
+        select match {
+            case "first" => _.take(1)
+            case "last" => _.reverse.take(1)
+            case null => identity
+            case _ => throw new IllegalArgumentException("Only 'first' or 'last' are allowed in property 'select'")
+        }
+
+  /**
+   * Transforms a text value appending/prepending a suffix/prefix.
+   * Note that the value will be trimmed iff the function needs to apply suffix/prefix.
+   * Otherwise the value will be left untouched.
+   *
+   * The suffix/prefix will never be trimmed.
+   *
+   * @param value The text value to transform
+   * @return  Transformed text (after applying prefix/suffix)
+   */
+    private def valueTransformer(value : String) = {
+
+        val p = prefix match {
+            case _ : String => prefix
+            case _ => ""
+        }
+
+        val s = suffix match {
+            case _ : String => suffix
+            case _ => ""
+        }
+
+        p + value.trim + s
+    }
 
     if(language == null) language = context.language
 
@@ -67,8 +96,8 @@ extends PropertyMapping
         "Language can only be specified for datatype properties")
 
       // TODO: don't use string constant, use RdfNamespace
-      require(ontologyProperty.range.uri == "http://www.w3.org/2001/XMLSchema#string",
-        "Language can only be specified for string datatype properties")
+      require(ontologyProperty.range.uri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString",
+        "Language can only be specified for rdf:langString datatype properties")
     }
     
     private val parser : DataParser = ontologyProperty.range match
@@ -98,10 +127,15 @@ extends PropertyMapping
             case "xsd:negativeInteger"    => new IntegerParser(context, multiplicationFactor = factor, validRange = (i => i < 0))
             case "xsd:double" => new DoubleParser(context, multiplicationFactor = factor)
             case "xsd:float" => new DoubleParser(context, multiplicationFactor = factor)
-            case "xsd:string" =>
+            case "xsd:string" => // strings with no language tags
             {
                 checkMultiplicationFactor("xsd:string")
                 StringParser
+            }
+            case "rdf:langString" => // strings with language tags
+            {
+              checkMultiplicationFactor("rdf:langString")
+              StringParser
             }
             case "xsd:anyURI" =>
             {
@@ -154,7 +188,7 @@ extends PropertyMapping
 
         for(propertyNode <- node.property(templateProperty) if propertyNode.children.size > 0)
         {
-            val parseResults = parser.parsePropertyNode(propertyNode, !ontologyProperty.isFunctional)
+            val parseResults = parser.parsePropertyNode(propertyNode, !ontologyProperty.isFunctional, transform, valueTransformer)
 
             for( parseResult <- selector(parseResults) )
             {
@@ -163,6 +197,7 @@ extends PropertyMapping
                     case (value : Double, unit : UnitDatatype) => writeUnitValue(node, value, unit, subjectUri, propertyNode.sourceUri)
                     case value => writeValue(value, subjectUri, propertyNode.sourceUri)
                 }
+
                 graph ++= g
             }
         }

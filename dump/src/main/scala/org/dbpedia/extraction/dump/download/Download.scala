@@ -55,7 +55,7 @@ object Download extends DownloadConfig
       for (((from, to), files) <- ranges; wiki <- wikis; if (from <= wiki.pages && wiki.pages <= to))
       {
         // ...add files for this range to files for this language
-        languages.getOrElseUpdate(wiki.language, new HashSet[String]) ++= files
+        languages.getOrElseUpdate(wiki.language, new HashSet[(String, Boolean)]) ++= files
       }
     }
     
@@ -64,8 +64,8 @@ object Download extends DownloadConfig
     keys.foreach { key => 
       val done = keys.until(key)
       val todo = keys.from(key)
-      println("done: "+done.size+" - "+done.mkString(","))
-      println("todo: "+todo.size+" - "+keys.from(key).mkString(","))
+      println("done: "+done.size+" - "+done.map(_.wikiCode).mkString(","))
+      println("todo: "+todo.size+" - "+keys.from(key).map(_.wikiCode).mkString(","))
       new LanguageDownloader(baseUrl, baseDir, wikiName, key, languages(key), downloader).downloadDates(dateRange, dumpCount)
     }
   }

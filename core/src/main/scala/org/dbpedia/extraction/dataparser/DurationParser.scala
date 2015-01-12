@@ -6,6 +6,7 @@ import org.dbpedia.extraction.util.Language
 import java.text.ParseException
 import java.util.logging.{Logger, Level}
 import util.matching.Regex
+import scala.language.reflectiveCalls
 
 class DurationParser( context : { def language : Language } )
 {
@@ -21,8 +22,10 @@ class DurationParser( context : { def language : Language } )
 
     val TimeValueColonUnitRegex = ("""^\D*?(-)?\s?(\d+)?\:(\d\d)\:?(\d\d)?\s*(""" + timeUnitsRegex + """)?(\W\D*?|\W*?)$""").r
 
-    // TODO: this regex does not support minus signs
-    val TimeValueUnitRegex = ("""(\d[,\.\s\d]*\s*)(""" + timeUnitsRegex + """)(\s|$)""").r
+    val TimeValueImplicitUnitRegex = ("""^\D*?(-)?\s?(\d+)\s*(""" + timeUnitsRegex + """)\s?(\d\d)(\W\D*?|\W*?)$""").r
+
+    // Allow leading decimal separator, e.g. .0254 = 0.0254
+    val TimeValueUnitRegex = ("""(-?[\,\.]?\d[,\.\s\d]*\s*)(""" + timeUnitsRegex + """)(\s|\,|$)""").r
 
     def parseToSeconds(input : String, inputDatatype : Datatype) : Option[Double] =
     {
@@ -114,11 +117,21 @@ class DurationParser( context : { def language : Language } )
                 }
             }
 
+            case TimeValueImplicitUnitRegex(sign, v1, unit, v2, trail) => {
+                // "xx unit yy"  unit must be hours or minutes
+                timeUnits.get(unit.trim).getOrElse("") match {
+                    case "hour" => Some(new Duration(hours = v1.toDouble, minutes = v2.toDouble, reverseDirection = (sign == "-")))
+                    case "minute" => Some(new Duration(minutes = v1.toDouble, seconds = v2.toDouble, reverseDirection = (sign == "-")))
+                    case _ => None
+                }
+            }
+
             case _ =>
             {
                 val durationsMap = TimeValueUnitRegex.findAllIn(input).matchData.map{ m =>
                 {
-                    val unit = timeUnits.get(m.subgroups(1).replaceAll("""\W""", "")).getOrElse(return None)  // hack to deal with e.g "min)" matches
+                    // Seconds and minutes could be indicated as ','',"
+                    val unit = timeUnits.get(m.subgroups(1).replaceAll("""[^\'\"a-zA-Z]""", "")).getOrElse(return None)  // hack to deal with e.g "min)" matches
                     val num = getNum(m).getOrElse(return None)
                     (unit, num) }
                 }.toMap
@@ -140,7 +153,8 @@ class DurationParser( context : { def language : Language } )
 
     private def getNum(m : Regex.Match) : Option[String] =
     {
-        val numberStr = m.subgroups(0)
+      // Since we match also \s in TimeValueUnitRegex then we should remove spaces before computing a number
+      val numberStr = m.subgroups(0).replaceAll("""\s""", "")
         try
         {
             Some(parserUtils.parse(numberStr).toString)

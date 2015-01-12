@@ -6,6 +6,7 @@ import org.dbpedia.extraction.destinations.{DBpediaDatasets, Quad}
 import org.dbpedia.extraction.ontology.Ontology
 import org.dbpedia.extraction.util.Language
 import scala.collection.mutable.ArrayBuffer
+import scala.language.reflectiveCalls
 
 /**
  * This extractor extracts all templates that exist in an article.
@@ -17,7 +18,7 @@ class ArticleTemplatesExtractor(
      def language: Language
      def redirects: Redirects
     }
-  ) extends Extractor {
+  ) extends PageNodeExtractor {
 
   // FIXME: this uses the http://xx.dbpedia.org/property/ namespace, but the
   // http://dbpedia.org/ontology/ namespace would probably make more sense.

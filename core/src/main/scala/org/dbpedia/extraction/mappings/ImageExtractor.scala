@@ -10,10 +10,11 @@ import java.math.BigInteger
 import java.security.MessageDigest
 import org.dbpedia.extraction.config.mappings.ImageExtractorConfig
 import org.dbpedia.extraction.ontology.Ontology
-import org.dbpedia.extraction.util.{Language, WikiUtil}
+import org.dbpedia.extraction.util.{Language, WikiUtil, ExtractorUtils}
 import java.net.URLDecoder
 import org.dbpedia.extraction.util.RichString.wrapString
 import scala.collection.mutable.ArrayBuffer
+import scala.language.reflectiveCalls
 
 /**
  * Extracts the first image of a Wikipedia page. Constructs a thumbnail from it, and
@@ -29,7 +30,7 @@ class ImageExtractor(
     def commonsSource: Source 
   } 
 ) 
-extends Extractor
+extends PageNodeExtractor
 {
   private val wikiCode = context.language.wikiCode
   private val language = context.language
@@ -37,9 +38,6 @@ extends Extractor
   require(ImageExtractorConfig.supportedLanguages.contains(wikiCode), "ImageExtractor's supported languages: "+ImageExtractorConfig.supportedLanguages.mkString(", ")+"; not "+wikiCode)
 
   private val fileNamespaceIdentifier = Namespace.File.name(language)
-
-  private val wikipediaUrlLangPrefix = ImageExtractorConfig.wikipediaUrlPrefix + wikiCode +"/"
-  private val commonsUrlPrefix = ImageExtractorConfig.wikipediaUrlPrefix + "commons/"
 
   private val logger = Logger.getLogger(classOf[MappingExtractor].getName)
 
@@ -57,17 +55,22 @@ extends Extractor
   private val foafThumbnailProperty = context.ontology.properties("foaf:thumbnail")
   private val dcRightsProperty = context.ontology.properties("dc:rights")
 
+  private val commonsLang = Language.Commons
+
   override val datasets = Set(DBpediaDatasets.Images)
 
     override def extract(node: PageNode, subjectUri: String, pageContext: PageContext): Seq[Quad] =
     {
         if(node.title.namespace != Namespace.Main) return Seq.empty
-        
+ 
         var quads = new ArrayBuffer[Quad]()
 
         for ((imageFileName, sourceNode) <- searchImage(node.children, 0) if !imageFileName.toLowerCase.startsWith("replace_this_image"))
         {
-            val (url, thumbnailUrl) = getImageUrl(imageFileName)
+            val lang = if(freeWikipediaImages.contains(URLDecoder.decode(imageFileName, "UTF-8"))) 
+                language else commonsLang
+            val url = ExtractorUtils.getFileURL(imageFileName, lang)
+            val thumbnailUrl = ExtractorUtils.getThumbnailURL(imageFileName, lang)
 
             quads += new Quad(language, DBpediaDatasets.Images, subjectUri, foafDepictionProperty, url, sourceNode.sourceUri)
             quads += new Quad(language, DBpediaDatasets.Images, subjectUri, dbpediaThumbnailProperty, thumbnailUrl, sourceNode.sourceUri)
@@ -170,45 +173,24 @@ extends Extractor
 
     private def checkImageRights(fileName: String) = (!nonFreeImages.contains(fileName))
 
-    private def getImageUrl(fileName: String): (String, String) =
-    {
-      // TODO: URLDecoder.decode() translates '+' to space. Is that correct here?
-      val decoded = URLDecoder.decode(fileName, "UTF-8")
-      
-      val urlPrefix = if(freeWikipediaImages.contains(decoded)) wikipediaUrlLangPrefix else commonsUrlPrefix
-
-      val md = MessageDigest.getInstance("MD5")
-      val messageDigest = md.digest(decoded.getBytes("UTF-8"))
-      var md5 = (new BigInteger(1, messageDigest)).toString(16)
-
-      // If the lenght of the MD5 hash is less than 32, then we should pad leading zeros to it, as converting it to
-      // BigInteger will result in removing all leading zeros.
-      // FIXME: this is the least efficient way of building a string.
-      while (md5.length < 32)
-        md5 = "0" + md5;
-
-      val hash1 = md5.substring(0, 1)
-      val hash2 = md5.substring(0, 2);
-
-      val urlPart = hash1 + "/" + hash2 + "/" + fileName
-      val ext = if (fileName.toLowerCase.endsWith(".svg")) ".png" else ""
-
-      val imageUrl = urlPrefix + urlPart
-      val thumbnailUrl = urlPrefix + "thumb/" + urlPart + "/200px-" + fileName + ext
-
-      (imageUrl, thumbnailUrl)
-    }
 }
 
 private object ImageExtractor
 {
+    // FIXME: This is so dumb. We're parsing the commons dump every time we initialize the ImageExtractor.
+    // Which means that we waste about an hour of CPU time for nine of the ten languages that currently
+    // use the ImageExtractor. And we're not even doing it in parallel - we're using just a single CPU!
+    // Things like this need to be done in pre-processing steps: parse the commons dump once, store the
+    // result in some file, or even in memory, load it when necessary. Similar for the language dumps:
+    // parse a language dump once (using multiple CPUs), extract redirects, images and maybe other stuff,
+    // store the result, load the result when needed.
     private def loadImages(source: Source, freeImages: MutableSet[String], nonFreeImages: MutableSet[String], wikiCode: String)
     {
         val logger = Logger.getLogger(classOf[ImageExtractor].getName)
         val startTime = System.nanoTime
 
         for(page <- source if page.title.namespace == Namespace.File;
-            ImageExtractorConfig.ImageLinkRegex <- List(page.title.encoded) )
+            ImageExtractorConfig.ImageLinkRegex() <- List(page.title.encoded) )
         {
             ImageExtractorConfig.NonFreeRegex(wikiCode).findFirstIn(page.source) match
             {

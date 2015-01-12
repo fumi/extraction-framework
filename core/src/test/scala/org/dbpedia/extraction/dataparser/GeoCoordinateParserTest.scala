@@ -2,13 +2,16 @@ package org.dbpedia.extraction.dataparser
 
 import org.dbpedia.extraction.mappings.Redirects
 import org.dbpedia.extraction.ontology.datatypes.Datatype
-import org.scalatest.matchers.ShouldMatchers
+import org.scalatest.Matchers
 import org.scalatest.FlatSpec
 import org.dbpedia.extraction.wikiparser.{WikiTitle, WikiParser}
 import org.dbpedia.extraction.sources.{WikiPage,MemorySource}
 import org.dbpedia.extraction.util.Language
+import org.junit.runner.RunWith
+import org.scalatest.junit.JUnitRunner
 
-class GeoCoordinateParserTest extends FlatSpec with ShouldMatchers
+@RunWith(classOf[JUnitRunner])
+class GeoCoordinateParserTest extends FlatSpec with Matchers
 {
 
     "GeoCoordinateParser(51º12'00\"N 03º13'00\"E)" should "return (51.2,3.216666666666667))" in
@@ -38,6 +41,10 @@ class GeoCoordinateParserTest extends FlatSpec with ShouldMatchers
         val geoCoordinateParser = new GeoCoordinateParser(context)
         val page = new WikiPage(WikiTitle.parse("TestPage", lang), input)
 
-        geoCoordinateParser.parse(wikiParser(page)).map({x => (x.latitude, x.longitude)})
+      wikiParser(page) match
+      {
+        case Some(n) => geoCoordinateParser.parse(n).map({x => (x.latitude, x.longitude)})
+        case None => None
+      }
     }
 }
