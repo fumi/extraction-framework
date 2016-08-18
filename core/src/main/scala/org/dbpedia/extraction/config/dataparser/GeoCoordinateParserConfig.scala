@@ -4,7 +4,8 @@ package org.dbpedia.extraction.config.dataparser
 object GeoCoordinateParserConfig
 {
     //make them language-specifig? might be redundant
-    val coordTemplateNames = Set("coord", "coor dms", "coor dm", "coor", "location", "geocoordinate", "coords", "coordenadas") 
+    val coordTemplateNames = Set("coord", "coor dms", "coor dm", "coor", "location", "geocoordinate", "coords", "coordenadas",
+                                 "ウィキ座標", "ウィキ座標度分秒", "ウィキ座標度分", "ウィキ座標度", "ウィキ座標2段度分秒", "日本の位置情報")
                                  //"coor title dms", "coor title d", "coor title dm", "coorheader",
                                  //"coor at dm", "coor at dms", "coor at d", "coor d/new", "coor dm/new",
                                  //"coor dms/new", "coor dec", "coor/new", "coor dms/archive001",
