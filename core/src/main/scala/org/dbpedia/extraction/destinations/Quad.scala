@@ -41,6 +41,7 @@ extends Ordered[Quad]
 with Equals
 {
   //updated for allowing addition of Wikidata String properties with unknown language
+  //try to use this constructor: when using DatasetDestination we need the exact name of the DBpedia dataset!
   def this(
     language: Language,
     dataset: Dataset,
@@ -191,7 +192,7 @@ object Quad
   
   private def safeHash(s: String): Int =
   {
-    if (s == null) 0 else s.hashCode;
+    if (s == null) 0 else s.hashCode
   }
   
   private def findType(datatype: Datatype, range: OntologyType): Datatype =

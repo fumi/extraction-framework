@@ -1,15 +1,24 @@
 package org.dbpedia.extraction.scripts
 
 import java.io.File
-import java.util.concurrent.atomic.AtomicLong
 
+import org.dbpedia.extraction.destinations.formatters.TerseFormatter
+import org.dbpedia.extraction.destinations.formatters.UriPolicy._
+import org.dbpedia.extraction.ontology.{OntologyClass, OntologyProperty, Ontology}
+import org.dbpedia.extraction.ontology.io.OntologyReader
+import org.dbpedia.extraction.scripts.QuadMapper.QuadMapperFormatter
+import org.dbpedia.extraction.sources.XMLSource
+
+import scala.Console._
 import scala.collection._
 import scala.collection.convert.decorateAsScala._
 import java.util.concurrent.ConcurrentHashMap
 
 import org.dbpedia.extraction.util.RichFile.wrapFile
-import org.dbpedia.extraction.destinations.Quad
+import org.dbpedia.extraction.destinations._
 import org.dbpedia.extraction.util._
+
+import scala.collection.mutable.ListBuffer
 
 /**
   * Created by Chile on 9/1/2016.
@@ -24,322 +33,439 @@ import org.dbpedia.extraction.util._
   */
 object SdTypeCreation {
 
-  def main(args: Array[String]): Unit = {
+  object PredicateDirection extends Enumeration {
+    val In, Out = Value
+  }
+  private var resourceCount = 0
+  private val type_count: concurrent.Map[String, ListBuffer[String]] = new ConcurrentHashMap[String, ListBuffer[String]]().asScala
+  private val disambiguations: concurrent.Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
+  private val typeStatistics = new ConcurrentHashMap[String, Float]().asScala
+  private val predStatisticsIn = new ConcurrentHashMap[String, Int]().asScala
+  private val predStatisticsOut = new ConcurrentHashMap[String, Int]().asScala
+  private val stat_resource_predicate_tf_in: concurrent.Map[String, concurrent.Map[String, Int]] = new ConcurrentHashMap[String, concurrent.Map[String, Int]]().asScala   //Object -> Predicate -> count
+  private val stat_resource_predicate_tf_out: concurrent.Map[String, concurrent.Map[String, Int]] = new ConcurrentHashMap[String, concurrent.Map[String, Int]]().asScala  //Subject -> Predicate -> count
+  private val stat_type_predicate_perc_in: concurrent.Map[String, concurrent.Map[String, (Float, Float)]] = new ConcurrentHashMap[String, concurrent.Map[String, (Float, Float)]]().asScala //Predicate(in) -> Type -> count
+  private val stat_type_predicate_perc_out: concurrent.Map[String, concurrent.Map[String, (Float, Float)]] = new ConcurrentHashMap[String, concurrent.Map[String, (Float, Float)]]().asScala//Predicate(out) -> Type -> count
+  private val stat_predicate_weight_apriori: concurrent.Map[PredicateDirection.Value, concurrent.Map[String, Float]] = new ConcurrentHashMap[PredicateDirection.Value, concurrent.Map[String, Float]]().asScala                           //Predicate(out) -> Weight
+  stat_predicate_weight_apriori.put(PredicateDirection.In, new ConcurrentHashMap[String, Float]().asScala)
+  stat_predicate_weight_apriori.put(PredicateDirection.Out, new ConcurrentHashMap[String, Float]().asScala)
+  private var propertyMap = Map[String, OntologyProperty]()
+  private var resultMap = new ConcurrentHashMap[String, List[Quad]]().asScala
+  private val contextMap = new ConcurrentHashMap[String, String]().asScala
+  private var suffix:String = null
 
-    require(args != null && args.length >= 5,
-      "need at least seven args: " +
-        /*0*/ "base dir, " +
-        /*1*/ "sdTypes output file name, " +
-        /*2*/ "sdInvalid output file name, " +
-        /*3*/ "file suffix (e.g. '.nt.gz', '.ttl', '.ttl.bz2'), " +
-        /*4*/ "sdType threshold as float (e.g. 0.4f)" +
-        /*5*/ "languages or article count ranges (e.g. 'en,fr' or '10000-')")
+  val dataset = DBpediaDatasets.SDInstanceTypes
 
-    val baseDir = new File(args(0))
-    require(baseDir.isDirectory() && baseDir.canRead() && baseDir.canWrite(), "Please specify a valid local base extraction directory!")
+  private var sdScoreThreshold:Float = 0f
+  private var owlThingPenalty: Float = 0f
 
-    require("\\.[a-zA-Z0-9]{2,3}\\.(gz|bz2)".r.replaceFirstIn(args(3).trim, "") == "", "provide a valid serialization extension starting with a dot (e.g. .ttl.bz2)")
+  private var inPropertiesExceptions: Seq[String] = null
+  private var outPropertiesExceptions: Seq[String] = null
 
-    require(!args(1).contains("."), "Please specify a valid sdTypes file name without extensions (suffixes)!")
-    val sdTypes = new File(baseDir + args(1).trim + args(3).trim)
-    sdTypes.createNewFile()
+  private var returnAllValid: Boolean = false
+  private var returnOnlyUntyped: Boolean = false
 
-    require(!args(2).contains("."), "Please specify a valid sdInvalid file name without extensions (suffixes)!")
-    val sdInvalid = new File(baseDir + args(2).trim + args(3).trim)
-    sdInvalid.createNewFile()
+  private var  finder: DateFinder[File] = null
 
-    val sdScoreThreshold =  args(4).toFloat
-    require(sdScoreThreshold >= 0.01f && sdScoreThreshold <= 0.99f, "Please specify a valid sdTypes score in the range of [0.01, 0.99].")
+  private var ontology: Ontology = null
 
-    val language = ConfigUtils.parseLanguages(baseDir, args(5).split(","))(0) //TODO
+  private var language: Language = null
 
-    var resourceCount = 0
-    val type_count: concurrent.Map[String, List[String]] = new ConcurrentHashMap[String, List[String]]().asScala
-    val disambiguations: concurrent.Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
-    val typeStatistics = new ConcurrentHashMap[String, Float]().asScala
-    //var stat_subjects: concurrent.Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
-    //var stat_objects: concurrent.Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
-    //var stat_property: concurrent.Map[String, Int] = new ConcurrentHashMap[String, Int]().asScala
-    val stat_resource_predicate_tf_in: concurrent.Map[String, concurrent.Map[String, Int]] = new ConcurrentHashMap[String, concurrent.Map[String, Int]]().asScala   //Object -> Predicate -> count
-    val stat_resource_predicate_tf_out: concurrent.Map[String, concurrent.Map[String, Int]] = new ConcurrentHashMap[String, concurrent.Map[String, Int]]().asScala  //Subject -> Predicate -> count
-    val stat_type_predicate_perc_in: concurrent.Map[String, concurrent.Map[String, (Float, Float)]] = new ConcurrentHashMap[String, concurrent.Map[String, (Float, Float)]]().asScala //Predicate(in) -> Type -> count
-    val stat_type_predicate_perc_out: concurrent.Map[String, concurrent.Map[String, (Float, Float)]] = new ConcurrentHashMap[String, concurrent.Map[String, (Float, Float)]]().asScala//Predicate(out) -> Type -> count
-    val stat_predicate_weight_apriori_in: concurrent.Map[String, Float] = new ConcurrentHashMap[String, Float]().asScala                          //Predicate(in) -> Weight
-    val stat_predicate_weight_apriori_out: concurrent.Map[String, Float] = new ConcurrentHashMap[String, Float]().asScala                         //Predicate(out) -> Weight
+  def getProperty(uri: String, ontology: Ontology) : Option[OntologyProperty] = {
+    if (propertyMap.contains(uri)) {
+      propertyMap.get(uri)
+    } else {
+      val predicateOpt = ontology.properties.find(x => x._2.uri == uri)
+      val predicate: OntologyProperty =
+        if (predicateOpt != null && predicateOpt != None) { predicateOpt.get._2 }
+        else null
+      propertyMap += (uri -> predicate)
+      Option(predicate)
+    }
+  }
 
+  private def mapBaseClassesToDistanceFromThing(currentClass: OntologyClass, scoreMap: ConcurrentHashMap[OntologyClass, Float], currentDistance: Int): Int ={
+    var ret = currentDistance
+    for(clas <- currentClass.baseClasses if !clas.isExternalClass && clas.baseClasses.nonEmpty)
+      {
+        scoreMap.put(clas, currentDistance)
+        ret = Math.max(mapBaseClassesToDistanceFromThing(clas, scoreMap, currentDistance+1), ret)
+      }
+    ret
+  }
 
+  var boosterScoreMaps = Map[OntologyClass, Map[OntologyClass, Float]]()
+  val thingScore = 0.5f                                                           //TODO make this configurable
 
-    //(in, out) : Type -> Predicate -> (tf,percentage,weight)
-    def getTypeScores(quad: Quad): Map[String, Float] ={
-      val in =  new ConcurrentHashMap[String, Map[String, (Float, Float, Float)]]().asScala
-      val out =  new ConcurrentHashMap[String, Map[String, (Float, Float, Float)]]().asScala
-      stat_resource_predicate_tf_in.get(quad.value) match {
-        case Some(m) => for (pred <- m) {
-          for (percM <- stat_type_predicate_perc_in.get(pred._1)) {
-            for (typ <- percM) {
-              in.get(typ._1) match {
-                case Some(map) => map.updated(pred._1, (pred._2, typ._2, stat_predicate_weight_apriori_in.get(pred._1).get))
+  private def createScoreMap(targetClass: OntologyClass): Map[OntologyClass, Float] = {
+    boosterScoreMaps.get(targetClass) match{
+      case Some(m) => m
+      case None =>
+      {
+        val scoreMap = new ConcurrentHashMap[OntologyClass, Float]()
+        scoreMap.put(targetClass, 0f)
+        val ontologyRootDistance = mapBaseClassesToDistanceFromThing(targetClass, scoreMap, 1)
+        val step = (1f - thingScore) / ontologyRootDistance
+        val retMap = scoreMap.asScala.map(x => x._1 -> (thingScore + (((x._2 - ontologyRootDistance) * (-1)) * step))) //calculate booster scores for the whole hierarchy
+        retMap += (OntologyClass.owlThing -> thingScore)
+        boosterScoreMaps += (targetClass -> retMap)
+        retMap
+      }
+    }
+  }
+
+  def calculateDomainRangeBooster(targetClass: String, predicate: String, inout: PredicateDirection.Value, ontology: Ontology): Float = {
+    val target = ontology.classes.find(x => x._2.uri == targetClass.trim) match {
+      case Some(x ) => x._2
+      case None => return 0f
+    }
+    val clas = getProperty(predicate, ontology) match{
+      case Some(property) => if(inout == PredicateDirection.In) property.range else property.domain
+      case None => return 0f
+    }
+    clas.isInstanceOf[OntologyClass] match{
+      case true => {
+        val scoreMapTarget = createScoreMap(target)
+        val scoreMapClass = createScoreMap(clas.asInstanceOf[OntologyClass])     //add owl:Thing
+        scoreMapTarget.get(clas.asInstanceOf[OntologyClass]) match{
+          case Some(booster) => booster
+          case None => scoreMapClass.get(target) match {
+            case Some(booster) => booster/2                       //Target subclass of Clas -> is taxed twice as hard
+            case None => 0f
+          }
+        }
+      }
+      case false => 0f
+    }
+  }
+
+  private def calculateOneDirectionalScore(resource: String, results: concurrent.Map[String, ListBuffer[(String, Float, Float, Int)]], inout: PredicateDirection.Value): Unit = {
+    val precentageMap = inout match{
+      case PredicateDirection.In => stat_type_predicate_perc_in
+      case PredicateDirection.Out => stat_type_predicate_perc_out
+    }
+    (if(inout == PredicateDirection.In) stat_resource_predicate_tf_in else stat_resource_predicate_tf_out).get(resource) match {
+      case Some(predicateMap) => for (pred <- predicateMap) {
+        val allResWithPred = precentageMap.get(pred._1).map(x => x.values.map(y => y._1).sum)
+        allResWithPred match {
+          case Some(allRes) =>
+            for (typ <- precentageMap.get(pred._1).get) {
+              val booster = calculateDomainRangeBooster(typ._1, pred._1, inout, ontology)
+              results.get(typ._1) match {
+                case Some(m) => {
+                  val zw = (typ._2._1 / allRes) * getAprioriDistribution(pred._1, inout)
+                  m += ((pred._1, zw * booster * pred._2, zw * booster, pred._2))
+                }
                 case None => {
-                  val zw = new ConcurrentHashMap[String, (Float, Float, Float)]().asScala
-                  zw.put(pred._1, (pred._2.toFloat, typ._2._2, stat_predicate_weight_apriori_in.get(pred._1).get))
-                  in.put(typ._1, zw)
+                  val zw = new ListBuffer[(String, Float, Float, Int)]()
+                  zw += ((pred._1, (typ._2._1 / allRes) * getAprioriDistribution(pred._1, inout) * booster * pred._2,
+                    (typ._2._1 / allRes) * getAprioriDistribution(pred._1, inout) * booster, pred._2))
+                  results.put(typ._1, zw)
                 }
               }
             }
+          case None =>
+        }
+      }
+      case None =>
+    }
+  }
+
+  private def getTypeScores(resource: String): List[(String, Float, Int, Float)] = {
+    val ret = new ConcurrentHashMap[String, ListBuffer[(String, Float, Float, Int)]]().asScala
+    calculateOneDirectionalScore(resource, ret, PredicateDirection.In)
+    calculateOneDirectionalScore(resource, ret, PredicateDirection.Out)
+    val normFactor = getNormalizationFactor(resource)
+    ret.map(x => (x._1, x._2.map(_._2).sum * normFactor, x._2.map(_._4).sum, x._2.map(_._3).sum * normFactor)).toList.sortBy[Float](_._2).reverse
+  }
+
+  def getTypePropability(typ: String): Float = {
+    if(resourceCount <= 0) throw new Exception("no resources found!")
+
+    typeStatistics.get(typ) match {
+      case Some(x)=> x
+      case None => typeStatistics.put(typ, type_count(typ).length.toFloat)
+    }
+    typeStatistics.get(typ).get / resourceCount.toFloat
+  }
+
+  def getResourcePredicateCount(res: String, pred: String, inout: PredicateDirection.Value): Int = {
+    val map = inout match{
+      case PredicateDirection.In => stat_resource_predicate_tf_in
+      case PredicateDirection.Out => stat_resource_predicate_tf_out
+    }
+    map.get(res) match{
+      case Some(m) => m.get(pred) match{
+        case Some(v) => return v
+        case None =>
+      }
+      case None =>
+    }
+    0
+  }
+
+  def saveAprioriDistributions(typ: (String, List[String]), pred: String, inout: PredicateDirection.Value): Unit ={
+    val map = inout match{
+      case PredicateDirection.In => predStatisticsIn
+      case PredicateDirection.Out => predStatisticsOut
+    }
+    val writeMap = inout match{
+      case PredicateDirection.In => stat_type_predicate_perc_in
+      case PredicateDirection.Out => stat_type_predicate_perc_out
+    }
+    map.get(pred) match {
+      case Some(resWithPred) => {                                                                                               //resources with predicate pred
+      val count = (for (res <- typ._2) yield getResourcePredicateCount(res, pred, inout)).sum                                 //count resources of type t with predicate pred
+      val percentage = count.toFloat / resWithPred.toFloat
+        val massFactor = 1f - (type_count.get(typ._1).get.length / resourceCount.toFloat)
+        writeMap.get(pred) match {
+          case Some(p) => p.get(typ._1) match {
+            case Some(c) => throw new Exception("this should be unique!")
+            case None => p.put(typ._1, (count.toFloat, if(count == 0) 0f else Math.pow(getTypePropability(typ._1) - percentage , 2).toFloat * massFactor))              // saving percentage and wp
+          }
+          case None => {
+            val zw = new ConcurrentHashMap[String, (Float, Float)]().asScala
+            val wp = Math.pow(percentage - getTypePropability(typ._1), 2).toFloat * massFactor
+            zw.put(typ._1, (count.toFloat, if(count == 0) 0f else wp))                          // saving percentage and wp
+            writeMap.put(pred, zw)
           }
         }
-        case None => throw new Exception("resource " + quad.value + " does not exist!")
+      }
+      case None =>
+    }
+  }
+
+  def getAprioriDistribution(predicate: String, inout: PredicateDirection.Value): Float ={
+    val map = inout match{
+      case PredicateDirection.In => stat_type_predicate_perc_in
+      case PredicateDirection.Out => stat_type_predicate_perc_out
+    }
+    stat_predicate_weight_apriori.get(inout).get.get(predicate) match {
+      case Some(v) => v
+      case None => {
+        val wp = map.get(predicate) match {
+          case Some(x) => x.map(_._2._2).sum                                 //make sum over all types pointed out by a predicate
+          case None => 0f
+        }
+        stat_predicate_weight_apriori.get(inout).get.put(predicate, wp)
+        wp
+      }
+    }
+  }
+
+  def getNormalizationFactor(resource: String): Float ={
+    val ret1 = stat_resource_predicate_tf_in.get(resource) match{
+      case Some(map) => (for( pred <- map.keys) yield getAprioriDistribution(pred, PredicateDirection.In)).sum
+      case None => 0f
+    }
+    val ret2 = stat_resource_predicate_tf_out.get(resource) match{
+      case Some(map) => (for( pred <- map.keys) yield getAprioriDistribution(pred, PredicateDirection.Out)).sum
+      case None => 0f
+    }
+    1f / (ret1 + ret2)
+  }
+
+  val typesWorker = SimpleWorkers(1.5, 1.0) { language: Language =>
+    QuadReader.readQuads(finder, "instance-types" + suffix, auto = true) { quad =>
+      contextMap.get(quad.subject) match{
+        case Some(l) =>
+        case None => contextMap.put(quad.subject, quad.context)
+      }
+      if(quad.value.trim.startsWith("http://dbpedia.org/ontology/")) // TODO check if this is relevant
+        type_count.get(quad.value) match {
+          case Some(list) => type_count.put(quad.value, list += quad.subject)
+          case None => {
+            val buff = new ListBuffer[String]()
+            buff += quad.subject
+            type_count.put(quad.value, buff)
+          }
+        }
+    }
+  }
+
+  val workerDisamb = SimpleWorkers(1.5, 1.0) { language: Language =>
+    QuadReader.readQuads(finder, "disambiguations-unredirected" + suffix, auto = true) { quad =>
+      disambiguations.put(quad.subject, 1)
+    }
+  }
+
+  val objectPropWorker = SimpleWorkers(1.5, 1.0) { language: Language =>
+    QuadReader.readQuads(finder, "mappingbased-objects-uncleaned" + suffix, auto = true) { quad =>
+      stat_resource_predicate_tf_in.get(quad.value) match {
+        case Some(m) => m.get(quad.predicate) match {
+          case Some(c) =>
+            m.put(quad.predicate, c + 1)
+          case None => m.put(quad.predicate, 1)
+        }
+        case None => {
+          val zw = new ConcurrentHashMap[String, Int]().asScala
+          zw.put(quad.predicate, 1)
+          stat_resource_predicate_tf_in.put(quad.value, zw)
+        }
+      }
+      predStatisticsIn.get(quad.predicate) match{
+        case Some(c) => predStatisticsIn.put(quad.predicate, c +1)
+        case None => predStatisticsIn.put(quad.predicate, 1)
       }
       stat_resource_predicate_tf_out.get(quad.subject) match {
-        case Some(m) => for (pred <- m) {
-          for (percM <- stat_type_predicate_perc_out.get(pred._1)) {
-            for (typ <- percM) {
-              out.get(typ._1) match {
-                case Some(map) => map.updated(pred._1, (pred._2, typ._2, stat_predicate_weight_apriori_out.get(pred._1).get))
-                case None => {
-                  val zw = new ConcurrentHashMap[String, (Float, Float, Float)]().asScala
-                  zw.put(pred._1, (pred._2.toFloat, typ._2._2, stat_predicate_weight_apriori_out.get(pred._1).get))
-                  out.put(typ._1, zw)
-                }
-              }
-            }
-          }
+        case Some(m) => m.get(quad.predicate) match {
+          case Some(c) =>
+            m.put(quad.predicate, c + 1)
+          case None =>
+            m.put(quad.predicate, 1)
         }
-        case None => throw new Exception("resource " + quad.subject + " does not exist!")
-      }
-      var ret = Map[String, Float]()
-      for(typ <- in.keys.toList) {
-        ret += (typ -> innerCalc(typ, in))
-      }
-      for(typ <- out.keys.toList) {
-        ret += (typ -> innerCalc(typ, out))
-      }
-      ret.toMap
-    }
-
-    def innerCalc(typ: String, map: Map[String, Map[String, (Float, Float, Float)]]): Float ={
-      var dividend = 0f
-      var divisor = 0f
-      for (pred <- map.get(typ).get.toList) {
-        dividend += pred._2._1 * pred._2._2 * pred._2._3
-        divisor += pred._2._1 * pred._2._3
-      }
-      dividend/divisor
-    }
-
-    def getTypePropability(typ: String): Float = {
-      if(resourceCount <= 0) throw new Exception("no resources found!")
-
-      typeStatistics.get(typ) match {
-        case Some(x)=>
-        case None => typeStatistics.put(typ, type_count.map(x => if(x._2.contains(typ)) 1 else 0).sum.toFloat)
-      }
-      typeStatistics.get(typ).get / resourceCount.toFloat
-    }
-
-/*    var lineCount = 0
-    val finder = new DateFinder(baseDir, language)
-    IOUtils.readLines(new RichFile(finder.byName("instance-types" + args(3).trim, true))) { line =>
-      line match {
-        case null => // ignore last value
-        case Quad(quad) => {
-          lineCount += 1
-          if (lineCount % 100000 == 0) System.out.println(lineCount)
+        case None => {
+          val zw = new ConcurrentHashMap[String, Int]().asScala
+          zw.put(quad.predicate, 1)
+          stat_resource_predicate_tf_out.put(quad.subject, zw)
         }
-        case str => if (str.nonEmpty && !str.startsWith("#")) throw new IllegalArgumentException("line did not match quad or triple syntax: " + line)
       }
-    }*/
-
-    val worker1 = SimpleWorkers(1.5, 1.0) { language: Language =>
-      val finder = new DateFinder(baseDir, language)
-      val typePattern = "instance-types(-transitive)?" + args(3).trim
-      QuadReader.readQuadsOfMultipleFiles(finder, typePattern, auto = true) { quad =>
-        if(quad.value.trim.startsWith("http://dbpedia.org/ontology/"))
-        type_count.get(quad.subject) match {
-          case Some(typeList) => type_count.put(quad.subject, typeList ::: List(quad.value))
-          case None => type_count.put(quad.subject, List(quad.value))
-        }
+      predStatisticsOut.get(quad.predicate) match{
+        case Some(c) => predStatisticsOut.put(quad.predicate, c +1)
+        case None => predStatisticsOut.put(quad.predicate, 1)
+      }
+      contextMap.get(quad.subject) match{
+        case Some(l) =>
+        case None => contextMap.put(quad.subject, quad.context)
       }
     }
+  }
 
-    val workerDisamb = SimpleWorkers(1.5, 1.0) { language: Language =>
-      val finder = new DateFinder(baseDir, language)
-      QuadReader.readQuads(finder, "disambiguations-unredirected" + args(3).trim, auto = true) { quad =>
-        disambiguations.put(quad.subject, 1)
+  val literalWorker = SimpleWorkers(1.5, 1.0) { language: Language =>
+    QuadReader.readQuads(finder, "mappingbased-literals" + suffix, auto = true) { quad =>
+      stat_resource_predicate_tf_out.get(quad.subject) match {
+        case Some(m) => m.get(quad.predicate) match {
+          case Some(c) =>
+            m.put(quad.predicate, c + 1)
+          case None =>
+            m.put(quad.predicate, 1)
+        }
+        case None => {
+          val zw = new ConcurrentHashMap[String, Int]().asScala
+          zw.put(quad.predicate, 1)
+          stat_resource_predicate_tf_out.put(quad.subject, zw)
+        }
+      }
+      predStatisticsOut.get(quad.predicate) match {
+        case Some(c) => predStatisticsOut.put(quad.predicate, c + 1)
+        case None => predStatisticsOut.put(quad.predicate, 1)
       }
     }
+  }
 
-    //count all predicates in special entry!
-    val predAll = new ConcurrentHashMap[String, Int]().asScala
-
-
-    val worker2 = SimpleWorkers(1.5, 1.0) { language: Language =>
-      val finder = new DateFinder(baseDir, language)
-      QuadReader.readQuads(finder, "mappingbased-objects-uncleaned" + args(3).trim, auto = true) { quad =>
-        //if (quad.hasObjectPredicate) {  no need since we use the objects dataset
-        stat_resource_predicate_tf_in.get(quad.value) match {
-          case Some(m) => m.get(quad.predicate) match {
-            case Some(c) =>
-              m.put(quad.predicate, c + 1)
-            case None => m.put(quad.predicate, 1)
-          }
-          case None => {
-            val zw = new ConcurrentHashMap[String, Int]().asScala
-            zw.put(quad.predicate, 1)
-            stat_resource_predicate_tf_in.put(quad.value, zw)
-          }
-        }
-        stat_resource_predicate_tf_out.get(quad.subject) match {
-          case Some(m) => m.get(quad.predicate) match {
-            case Some(c) =>
-              m.put(quad.predicate, c + 1)
-            case None =>
-              m.put(quad.predicate, 1)
-          }
-          case None => {
-            val zw = new ConcurrentHashMap[String, Int]().asScala
-            zw.put(quad.predicate, 1)
-            stat_resource_predicate_tf_out.put(quad.subject, zw)
-          }
-        }
-
-        predAll.get(quad.predicate) match {
-          case Some(c) => predAll.put(quad.predicate, c + 1)
-          case None => predAll.put(quad.predicate, 1)
-        }
-        /*          stat_subjects.get(quad.subject) match {
-            case Some(count) => stat_subjects.put(quad.subject, count + 1)
-            case None => stat_subjects.put(quad.subject, 1)
-          }
-          stat_objects.get(quad.subject) match {
-            case Some(count) => stat_objects.put(quad.value, count + 1)
-            case None => stat_objects.put(quad.value, 1)
-          }
-          stat_property.get(quad.predicate) match {
-            case Some(count) => stat_property.put(quad.predicate, count + 1)
-            case None => stat_property.put(quad.predicate, 1)
-          }*/
-        //}
-      }
-      resourceCount = (stat_resource_predicate_tf_in.keys.toList ::: stat_resource_predicate_tf_out.keys.toList).distinct.length
+  val probabilityWorker = SimpleWorkers(1.5, 1.0) { pred: String =>
+    for (typ <- type_count) //all types
+    {
+      saveAprioriDistributions((typ._1, typ._2.toList), pred, PredicateDirection.In)
+      saveAprioriDistributions((typ._1, typ._2.toList), pred, PredicateDirection.Out)
     }
+  }
 
-    val worker3 = SimpleWorkers(1.5, 1.0) { language: Language =>
-      for (uri <- type_count.keys) {
-        for (typ <- type_count.get(uri).get) {
-          stat_resource_predicate_tf_in.get(uri) match{
-            case Some(predMap) =>
-              for (pred <- predMap) {
-                val percentage = pred._2.toFloat
-              stat_type_predicate_perc_in.get(pred._1) match {
-                case Some(p) => p.get(typ) match {
-                  case Some(c) => p.put(typ, (c._1+percentage, 0f))
-                  case None => p.put(typ, (percentage, 0f))
-                }
-                case None => {
-                  val zw = new ConcurrentHashMap[String, (Float, Float)]().asScala
-                  zw.put(typ, (percentage, 0f))
-                  stat_type_predicate_perc_in.put(pred._1, zw)
-                }
-              }
-            }
-            case None =>
-          }
-          stat_resource_predicate_tf_out.get(uri) match {
-            case Some(predMap) =>
-              for (pred <- predMap) {
-                val percentage = pred._2.toFloat
-                stat_type_predicate_perc_out.get (pred._1) match {
-                    case Some (p) => p.get (typ) match {
-                    case Some (c) => p.put(typ, (c._1+percentage, 0f))
-                    case None => p.put (typ, (percentage, 0f))
-                  }
-                  case None => {
-                    val zw = new ConcurrentHashMap[String, (Float, Float)]().asScala
-                    zw.put (typ, (percentage, 0f))
-                    stat_type_predicate_perc_out.put (pred._1, zw)
-                  }
-                }
-              }
-            case None =>
-          }
-        }
-      }
-      for (typeMap <- stat_type_predicate_perc_in) {
-        for(typ <- typeMap._2.keys){
-          predAll.get(typeMap._1) match{
-            case Some(c) => typeMap._2.put(typ, (typeMap._2.get(typ).get._1, typeMap._2.get(typ).get._1 / c.toFloat))
-            case None => System.out.println("pred not found, why?")
-          }
-          stat_predicate_weight_apriori_in.get(typeMap._1) match {
-            case Some(w) => stat_predicate_weight_apriori_in.put(typeMap._1, w + Math.pow(typeMap._2.get(typ).get._2 - getTypePropability(typ), 2).toFloat)
-            case None => stat_predicate_weight_apriori_in.put(typeMap._1, Math.pow(typeMap._2.get(typ).get._2 - getTypePropability(typ), 2).toFloat)
-          }
-        }
-      }
-      for (typeMap <- stat_type_predicate_perc_out) {
-        for(typ <- typeMap._2.keys){
-          predAll.get(typeMap._1) match{
-            case Some(c) => typeMap._2.put(typ, (typeMap._2.get(typ).get._1, typeMap._2.get(typ).get._1 / c.toFloat))
-            case None => System.out.println("pred not found, why?")
-          }
-          stat_predicate_weight_apriori_out.get(typeMap._1) match {
-            case Some(w) => stat_predicate_weight_apriori_out.put(typeMap._1, w + Math.pow(typeMap._2.get(typ).get._2 - getTypePropability(typ), 2).toFloat)
-            case None => stat_predicate_weight_apriori_out.put(typeMap._1, Math.pow(typeMap._2.get(typ).get._2 - getTypePropability(typ), 2).toFloat)
-          }
-        }
+  val resultCalculator = SimpleWorkers(1.5, 5.0) { resources: List[String] =>
+    val zw = new ListBuffer[Quad]()
+    val idPos = resources.head.lastIndexOf("/")+1
+    for(resource <- resources) {
+      val newType = getTypeScores(resource)
+      val current = newType.head
+      var read = true
+      while (read && current._2 >= sdScoreThreshold) {
+        //compare to score threshold
+        zw += new Quad(
+          language = language,
+          dataset = dataset,
+          subject = resource,
+          predicate = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+          value = current._1,
+          context = (contextMap.get(resource) match{
+              case Some (c) => if(c.contains('#')) c.substring(0, c.indexOf('#')) else c
+              case None => resource + "?nowikientry=linktarget"}) +
+            "#typeCalculatedBy=sdTypeAlgorithm&sdTypeScore=" + (if (current._2 > 1f) 1f else current._2) +
+            "&sdTypeBasedOn=" + current._3,
+          datatype = null)
+        read = returnAllValid
       }
     }
+    resultMap.put(resources.head, zw.toList)
+  }
 
-    val worker4 = SimpleWorkers(1.5, 1.0) { language: Language =>
-      val finder = new DateFinder(baseDir, language)
-      //run second and final pass
-      var lastResource: String = ""
-      QuadMapper.mapQuads(finder, "mappingbased-objects-uncleaned" + args(3).trim, args(1).trim + args(3).trim, auto = true, required = true) { quad =>
-        //check if resource has no type and has not already been processed
-        if (lastResource.trim != quad.subject.trim){// && disambiguations.get(quad.subject).isEmpty && type_count.get(quad.subject).isEmpty) {
-          lastResource = quad.subject
-          var zw = ("zw", 0f)
-          for (newType <- getTypeScores(quad) if newType._2 >= sdScoreThreshold) //compare to score threshold
-            if(zw._2 < newType._2)
-                zw = newType
-          List(new Quad(
-              language = quad.language,
-              dataset = args(1).trim ,
-              subject = quad.subject,
-              predicate = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-              value = zw._1,
-              context = quad.context + "&typeCalculatedBy=sdTypeAlgorithm&sdTypeScore=" + zw._2,
-              datatype = null),
-            new Quad(
-              language = quad.language,
-              dataset = null ,
-              subject = quad.subject,
-              predicate = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-              value = type_count.getOrElse(quad.subject.trim, List("http://fakeuri.org/notype")).last,
-              context = quad.context,
-              datatype = null
-            )
-          )
-        }
-        else List()
-      }
+  def main(args: Array[String]): Unit = {
+
+    require(args != null && args.length == 1, "One arguments required, extraction config file")
+
+    val config = ConfigUtils.loadConfig(args(0), "UTF-8")
+
+    val baseDir = ConfigUtils.getValue(config, "base-dir", required=true)(new File(_))
+    require(baseDir.isDirectory() && baseDir.canRead() && baseDir.canWrite(), "Please specify a valid local base extraction directory!")
+
+    suffix = ConfigUtils.getString(config, "suffix", required=true)
+    require(suffix.startsWith("."), "Please specify a valid file extension starting with a '.'!")
+    require("\\.[a-zA-Z0-9]{2,3}\\.(gz|bz2)".r.replaceFirstIn(suffix, "") == "", "provide a valid serialization extension starting with a dot (e.g. .ttl.bz2)")
+
+    sdScoreThreshold =  ConfigUtils.getString(config, "threshold", required=true).toFloat
+    require(sdScoreThreshold >= 0.01f && sdScoreThreshold <= 0.99f, "Please specify a valid sdTypes score in the range of [0.01, 0.99].")
+
+    owlThingPenalty =  ConfigUtils.getString(config, "owl-thing-penalty", required=true).toFloat
+    require(owlThingPenalty >= 0.01f && owlThingPenalty <= 0.99f, "Please specify a valid owlThingPenalty score in the range of [0.01, 0.99].")
+
+    inPropertiesExceptions = ConfigUtils.getValues(config, "in-properties-exceptions",',', required=false)(x => x)
+    outPropertiesExceptions = ConfigUtils.getValues(config, "out-properties-exceptions",',', required=false)(x => x)
+
+    returnAllValid = ConfigUtils.getString(config, "return-all-valid-types", required=false).toBoolean
+    returnOnlyUntyped = ConfigUtils.getString(config, "return-only-untyped", required=false).toBoolean
+
+    val langConfString = ConfigUtils.getString(config, "languages", required=true)
+    language = ConfigUtils.parseLanguages(baseDir, langConfString.split(","))(0) //TODO
+
+    finder = new DateFinder(baseDir, language)
+    finder.byName("instance-types" + suffix, auto = true)   //work around to set date of finder
+
+    ontology = {
+      val ontologySource = ConfigUtils.getValue(config, "ontology", required=false)(new File(_))
+      new OntologyReader().read( XMLSource.fromFile(ontologySource, Language.Mappings))
     }
 
-    worker1.start()
-    worker1.process(language)
-    worker2.start()
-    worker2.process(language)
-    workerDisamb.start()
-    workerDisamb.process(language)
-    worker1.stop()
-    worker2.stop()
-    workerDisamb.stop()
-    worker3.start()
-    worker3.process(language)
-    worker3.stop()
-    worker4.start()
-    worker4.process(language)
-    worker4.stop()
+    val formats = parseFormats(config, "uri-policy", "format").map( x=>
+      x._1 -> (if(x._2.isInstanceOf[TerseFormatter]) new QuadMapperFormatter(x._2.asInstanceOf[TerseFormatter]) else x._2)).toMap
+
+    val destination = DestinationUtils.createDestination(finder, Seq(dataset), formats)
+
+    //read all input files and process the content
+    Workers.workInParallel[Language](Array(typesWorker, objectPropWorker, workerDisamb,literalWorker), Seq(language))
+
+    //delete properties exempted by the user
+    outPropertiesExceptions.map(x => predStatisticsOut.remove(x))
+    inPropertiesExceptions.map(x => predStatisticsIn.remove(x))
+
+    //count unique resources
+    resourceCount = (stat_resource_predicate_tf_in.keys.toList ::: stat_resource_predicate_tf_out.keys.toList).distinct.length
+    //get all predicates
+    val allPreds = (predStatisticsIn.keys.toList ::: predStatisticsOut.keys.toList).distinct
+
+    //run the intermediate statistical calculations
+    Workers.work[String](probabilityWorker, allPreds, language.wikiCode + ": Type statistics calculation")
+
+    //do the type calculations and write to files(s)
+    val baseuri = if(language == Language.English) "http://dbpedia.org/resource/" else language.dbpediaUri
+    val allResources = returnOnlyUntyped match{
+      case true => (stat_resource_predicate_tf_in.keySet.toList ::: stat_resource_predicate_tf_out.keySet.toList)
+        .filter(x => x.startsWith(baseuri))
+        .diff[String](type_count.values.flatMap(x => x).toSeq)
+        .diff[String](disambiguations.keys.toSeq)
+        .distinct
+      case false => (stat_resource_predicate_tf_in.keySet.toList ::: stat_resource_predicate_tf_out.keySet.toList)
+        .filter(x => x.startsWith(baseuri))
+        .distinct
+    }
+    err.println(language.wikiCode + ": Starting to calculate new types for " + allResources.size + " instances.")
+    resultMap = new ConcurrentHashMap[String, List[Quad]]((allResources.size/0.75f+1).toInt).asScala  //setting initial size for performance reasons
+    Workers.work[List[String]](resultCalculator, allResources.grouped(100).toList, language.wikiCode + ": New type statements calculation")
+
+    //write results to file
+    err.println(language.wikiCode + ": Starting to write " + dataset.name + suffix + " with " + resultMap.values.size + " instances.")
+    destination.open()
+    Workers.work[List[Quad]](SimpleWorkers(1.5, 2.0){ quads: List[Quad] =>
+      destination.write(quads)
+    }, resultMap.values.toList, language.wikiCode + ": New type statements written")
+    destination.close()
   }
 }
